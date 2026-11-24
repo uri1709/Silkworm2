@@ -1,0 +1,2259 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SILKWORM II — FullHD</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230d1424'/%3E%3Cpath d='M5 16h14l8 5-8 4H5z' fill='%2369db7c'/%3E%3Ccircle cx='21' cy='19' r='2.2' fill='%239fe8ff'/%3E%3Crect x='12' y='6' width='12' height='2' rx='1' fill='%23ffe066'/%3E%3C/svg%3E">
+<style>
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    padding: 20px;
+    background: radial-gradient(circle at 50% -10%, #1c2236 0%, #06070c 65%);
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+    color: #8b93ad;
+  }
+
+  .frame {
+    position: relative;
+    width: min(1600px, 96vw);
+    border-radius: 14px;
+    overflow: hidden;
+    box-shadow:
+      0 40px 90px rgba(0, 0, 0, .75),
+      0 0 0 1px rgba(192, 3, 3, 0.08),
+      0 0 0 8px #0b0d14;
+  }
+
+  canvas {
+    display: block;
+    width: 100%;
+    height: auto;
+    background: #0a0e1a;
+  }
+
+  .frame::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    border-radius: 14px;
+    box-shadow: inset 0 0 90px rgba(0, 0, 0, .55);
+  }
+
+  .help {
+    margin: 0;
+    font-size: 13.5px;
+    text-align: center;
+    color: #6d7591;
+  }
+
+  .help b { color: #c3cbe4; font-weight: 600; }
+</style>
+</head>
+<body>
+
+<div class="frame">
+  <canvas id="game" width="1920" height="1080" aria-label="Silkworm II, уровень 1"></canvas>
+</div>
+
+<p class="help">
+  <b>W A S D</b> / <b>стрелки</b> — полёт · <b>ПРОБЕЛ</b> — огонь: 2 вперёд + 1 вниз под 45° ·
+  <b>R</b> — заново · <b>M</b> — звук<br>
+  Бонусы: <b>жёлтый</b> — двойной залп и вдвое чаще · <b>синий</b> — самонаводящиеся ракеты (второй — вдвое чаще) ·
+  <b>серый</b> — броня на 2 попадания
+</p>
+
+<script>
+(function () {
+  'use strict';
+
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+
+  // логическая сетка 640x360, рендер в 1920x1080
+  const W = 640;
+  const H = 360;
+  const SCALE = 3;
+
+  const GROUND_Y = 300;
+  const LEVEL_END = 6800;
+  const SCROLL_SPEED = 110;
+  const MAX_LIVES = 3;
+  const BOSS_HP = 130;
+
+  // ============================================================
+  //  УТИЛИТЫ
+  // ============================================================
+
+  const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const wrap = (v, p) => ((v % p) + p) % p;
+  const lerp = (a, b, t) => a + (b - a) * t;
+
+  function rr(x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  function box(a, b) {
+    return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+  }
+
+  function text(str, x, y, size, color, align, weight) {
+    ctx.font = (weight || 600) + ' ' + size + 'px "Segoe UI", system-ui, sans-serif';
+    ctx.textAlign = align || 'left';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillStyle = 'rgba(0,0,0,.55)';
+    ctx.fillText(str, x + 1.5, y + 1.5);
+    ctx.fillStyle = color;
+    ctx.fillText(str, x, y);
+  }
+
+  // ============================================================
+  //  SVG-АССЕТЫ
+  // ============================================================
+
+  const SVG = {};
+
+  // --- вертолёт игрока ---
+  SVG.player = `
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="240" viewBox="0 0 512 240">
+  <defs>
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#6ea862"/>
+      <stop offset=".45" stop-color="#3f7040"/>
+      <stop offset="1" stop-color="#1e3a20"/>
+    </linearGradient>
+    <linearGradient id="glass" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#d8f6ff"/>
+      <stop offset=".45" stop-color="#74b8d6"/>
+      <stop offset="1" stop-color="#24576f"/>
+    </linearGradient>
+    <linearGradient id="rotor" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset=".45" stop-color="#ffffff" stop-opacity=".5"/>
+      <stop offset=".55" stop-color="#ffffff" stop-opacity=".5"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="soft" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="4"/>
+    </filter>
+  </defs>
+
+  <path d="M62 118 L206 106 L206 136 L64 136 Z" fill="#2a5026"/>
+  <path d="M54 96 L78 102 L78 144 L54 150 Z" fill="#22431e"/>
+  <path d="M60 82 L76 98 L76 146 L60 152 Z" fill="#31592c"/>
+  <ellipse cx="52" cy="118" rx="8" ry="40" fill="#fff" opacity=".22" filter="url(#soft)"/>
+
+  <path d="M188 94 Q252 82 322 86 Q382 90 412 110 Q424 121 410 136 Q382 156 316 158 Q250 158 194 140 Q178 132 180 113 Q182 101 188 94 Z" fill="url(#body)"/>
+  <path d="M206 100 Q264 90 332 94 Q360 96 378 104" stroke="#b9e0aa" stroke-opacity=".5" stroke-width="6" fill="none" stroke-linecap="round"/>
+
+  <path d="M366 95 Q404 99 420 116 Q422 125 408 133 Q388 148 354 146 Z" fill="url(#glass)"/>
+  <path d="M376 102 Q398 106 408 117" stroke="#fff" stroke-opacity=".7" stroke-width="5" fill="none" stroke-linecap="round"/>
+
+  <rect x="286" y="146" width="86" height="12" rx="5" fill="#3b3f37"/>
+  <rect x="300" y="155" width="14" height="10" rx="3" fill="#2a2d27"/>
+  <rect x="350" y="155" width="14" height="10" rx="3" fill="#2a2d27"/>
+
+  <path d="M232 158 L254 176 L372 176" stroke="#1c1e1a" stroke-width="7" stroke-linecap="round" fill="none"/>
+  <path d="M242 154 L242 170" stroke="#1c1e1a" stroke-width="6"/>
+  <path d="M352 154 L352 170" stroke="#1c1e1a" stroke-width="6"/>
+
+  <rect x="290" y="68" width="14" height="28" rx="4" fill="#2f3229"/>
+  <ellipse cx="298" cy="58" rx="228" ry="10" fill="url(#rotor)" filter="url(#soft)"/>
+  <ellipse cx="298" cy="58" rx="66" ry="6" fill="#fff" opacity=".3" filter="url(#soft)"/>
+
+  <circle cx="330" cy="150" r="4.5" fill="#ff5252"/>
+  <circle cx="214" cy="102" r="3" fill="#9fe8ff" opacity=".9"/>
+</svg>`;
+
+  // --- вражеский дрон ---
+  SVG.drone = `
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="160" viewBox="0 0 320 160">
+  <defs>
+    <linearGradient id="db" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#e57777"/>
+      <stop offset=".5" stop-color="#a83232"/>
+      <stop offset="1" stop-color="#521313"/>
+    </linearGradient>
+    <linearGradient id="dg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffe1e1"/>
+      <stop offset="1" stop-color="#ff7b7b"/>
+    </linearGradient>
+    <filter id="db2" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="5"/>
+    </filter>
+  </defs>
+  <ellipse cx="298" cy="80" rx="18" ry="26" fill="#ffb703" opacity=".5" filter="url(#db2)"/>
+  <path d="M46 66 Q120 44 234 56 L288 74 Q294 80 288 88 L234 104 Q120 116 46 94 Q28 86 28 80 Q28 74 46 66 Z" fill="url(#db)"/>
+  <path d="M58 70 Q140 54 232 62" stroke="#ffbdbd" stroke-opacity=".45" stroke-width="4" fill="none" stroke-linecap="round"/>
+  <path d="M38 70 Q58 62 74 70 L74 90 Q58 98 38 90 Z" fill="#6b1313"/>
+  <ellipse cx="60" cy="80" rx="9" ry="8" fill="url(#dg)" opacity=".9"/>
+  <path d="M150 56 L184 26 L198 31 L174 60 Z" fill="#7d1e1e"/>
+  <path d="M150 104 L184 134 L198 129 L174 100 Z" fill="#7d1e1e"/>
+  <circle cx="252" cy="74" r="3" fill="#ff5252"/>
+</svg>`;
+
+  // --- вражеский вертолёт (нос влево) ---
+  SVG.eheli = `
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="240" viewBox="0 0 512 240">
+  <defs>
+    <linearGradient id="eh" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#b2545c"/>
+      <stop offset=".5" stop-color="#7a2731"/>
+      <stop offset="1" stop-color="#3a0f14"/>
+    </linearGradient>
+    <linearGradient id="eg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffd0d0"/>
+      <stop offset="1" stop-color="#c0563f"/>
+    </linearGradient>
+    <linearGradient id="er" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#fff" stop-opacity="0"/>
+      <stop offset=".5" stop-color="#fff" stop-opacity=".4"/>
+      <stop offset="1" stop-color="#fff" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="es" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="4"/>
+    </filter>
+  </defs>
+  <path d="M450 118 L306 106 L306 136 L448 136 Z" fill="#4a141a"/>
+  <path d="M458 96 L434 102 L434 144 L458 150 Z" fill="#3d1116"/>
+  <path d="M452 82 L436 98 L436 146 L452 152 Z" fill="#521a22"/>
+  <ellipse cx="460" cy="118" rx="8" ry="40" fill="#fff" opacity=".16" filter="url(#es)"/>
+
+  <path d="M324 94 Q260 82 190 86 Q130 90 100 110 Q88 121 102 136 Q130 156 196 158 Q262 158 318 140 Q334 132 332 113 Q330 101 324 94 Z" fill="url(#eh)"/>
+  <path d="M306 100 Q248 90 180 94 Q152 96 134 104" stroke="#ffb0b0" stroke-opacity=".3" stroke-width="6" fill="none" stroke-linecap="round"/>
+  <path d="M146 95 Q108 99 92 116 Q90 125 104 133 Q124 148 158 146 Z" fill="url(#eg)" opacity=".85"/>
+
+  <rect x="226" y="146" width="82" height="12" rx="5" fill="#33191c"/>
+  <path d="M300 158 L278 176 L162 176" stroke="#1a0b0d" stroke-width="7" stroke-linecap="round" fill="none"/>
+  <path d="M290 154 L290 170" stroke="#1a0b0d" stroke-width="6"/>
+  <path d="M180 154 L180 170" stroke="#1a0b0d" stroke-width="6"/>
+
+  <rect x="222" y="68" width="14" height="28" rx="4" fill="#2a1518"/>
+  <ellipse cx="228" cy="58" rx="200" ry="10" fill="url(#er)" filter="url(#es)"/>
+  <circle cx="196" cy="150" r="4" fill="#ff5252"/>
+  <circle cx="300" cy="100" r="3" fill="#ffd166" opacity=".8"/>
+</svg>`;
+
+  // --- турель (основание; стволы рисуются поверх) ---
+  SVG.turret = `
+<svg xmlns="http://www.w3.org/2000/svg" width="240" height="180" viewBox="0 0 240 180">
+  <defs>
+    <linearGradient id="tb" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#7a6a56"/>
+      <stop offset="1" stop-color="#3b3229"/>
+    </linearGradient>
+    <linearGradient id="tt" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#9b8a71"/>
+      <stop offset="1" stop-color="#554a3b"/>
+    </linearGradient>
+    <radialGradient id="tl" cx=".5" cy=".5" r=".5">
+      <stop offset="0" stop-color="#fff"/>
+      <stop offset=".4" stop-color="#ff6b6b"/>
+      <stop offset="1" stop-color="#8b1a1a" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <path d="M20 118 L220 118 L238 168 L2 168 Z" fill="url(#tb)"/>
+  <path d="M34 118 L206 118 L214 132 L26 132 Z" fill="#4b4033"/>
+  <path d="M70 74 Q120 56 170 74 L184 118 L56 118 Z" fill="url(#tt)"/>
+  <path d="M84 80 Q120 68 156 80" stroke="#c4b294" stroke-opacity=".45" stroke-width="4" fill="none" stroke-linecap="round"/>
+  <circle cx="120" cy="96" r="16" fill="url(#tl)"/>
+  <circle cx="120" cy="96" r="6" fill="#ffe3e3"/>
+  <rect x="26" y="150" width="16" height="6" rx="3" fill="#2f271f"/>
+  <rect x="198" y="150" width="16" height="6" rx="3" fill="#2f271f"/>
+</svg>`;
+
+  // --- босс ---
+  SVG.boss = `
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="480" viewBox="0 0 960 480">
+  <defs>
+    <linearGradient id="bh" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#a04a54"/>
+      <stop offset=".45" stop-color="#5e1f27"/>
+      <stop offset="1" stop-color="#260a0e"/>
+    </linearGradient>
+    <linearGradient id="bh2" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#c46874"/>
+      <stop offset="1" stop-color="#6d222c"/>
+    </linearGradient>
+    <linearGradient id="bcg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fff2c4"/>
+      <stop offset=".55" stop-color="#ffa94d"/>
+      <stop offset="1" stop-color="#b8481f"/>
+    </linearGradient>
+    <radialGradient id="bcore" cx=".5" cy=".5" r=".5">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset=".3" stop-color="#ffd166"/>
+      <stop offset="1" stop-color="#ff5252" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="bb" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="8"/>
+    </filter>
+  </defs>
+
+  <ellipse cx="520" cy="52" rx="430" ry="20" fill="#ffffff" opacity=".16" filter="url(#bb)"/>
+  <ellipse cx="520" cy="52" rx="150" ry="10" fill="#ffffff" opacity=".28" filter="url(#bb)"/>
+  <rect x="498" y="56" width="28" height="50" rx="6" fill="#3a2a2a"/>
+
+  <path d="M118 190 L238 136 L700 148 L858 200 L880 262 L818 322 L700 352 L258 340 L138 300 Z" fill="url(#bh)"/>
+  <path d="M176 178 L300 148 L718 158 L840 206" stroke="url(#bh2)" stroke-width="14" fill="none" stroke-linecap="round"/>
+  <path d="M300 176 L680 184" stroke="#2c0d12" stroke-width="6" fill="none" opacity=".8"/>
+  <path d="M320 300 L690 310" stroke="#2c0d12" stroke-width="6" fill="none" opacity=".8"/>
+
+  <path d="M136 198 Q178 178 232 190 L244 272 Q192 288 150 266 Z" fill="url(#bcg)"/>
+  <path d="M156 206 Q192 196 224 204" stroke="#fff" stroke-opacity=".55" stroke-width="6" fill="none" stroke-linecap="round"/>
+
+  <rect x="56" y="248" width="122" height="28" rx="9" fill="#241a1a"/>
+  <rect x="34" y="255" width="42" height="14" rx="6" fill="#151010"/>
+  <rect x="60" y="238" width="70" height="8" rx="4" fill="#3a2c2c"/>
+
+  <g>
+    <rect x="330" y="328" width="110" height="52" rx="14" fill="#3a1519"/>
+    <circle cx="360" cy="354" r="10" fill="#120a0c"/>
+    <circle cx="390" cy="354" r="10" fill="#120a0c"/>
+    <circle cx="420" cy="354" r="10" fill="#120a0c"/>
+  </g>
+  <g>
+    <rect x="520" y="328" width="110" height="52" rx="14" fill="#3a1519"/>
+    <circle cx="550" cy="354" r="10" fill="#120a0c"/>
+    <circle cx="580" cy="354" r="10" fill="#120a0c"/>
+    <circle cx="610" cy="354" r="10" fill="#120a0c"/>
+  </g>
+
+  <circle cx="470" cy="242" r="76" fill="url(#bcore)"/>
+  <circle cx="470" cy="242" r="16" fill="#ffffff" opacity=".9"/>
+
+  <path d="M856 208 L930 188 L940 242 L880 252 Z" fill="#4a161d"/>
+  <path d="M876 196 L916 182" stroke="#7d2a34" stroke-width="8" stroke-linecap="round"/>
+  <circle cx="758" cy="300" r="8" fill="#ff5252"/>
+  <circle cx="802" cy="278" r="6" fill="#ffd166"/>
+  <circle cx="700" cy="176" r="5" fill="#ff5252" opacity=".8"/>
+</svg>`;
+
+  // --- дальние горы (тайл 1920x510) ---
+  SVG.mountains = `
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="510" viewBox="0 0 1920 510">
+  <defs>
+    <linearGradient id="mfar" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#93a2c9"/>
+      <stop offset="1" stop-color="#c3cbe2"/>
+    </linearGradient>
+    <linearGradient id="mnear" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5f6f9d"/>
+      <stop offset="1" stop-color="#93a1c4"/>
+    </linearGradient>
+  </defs>
+  <path d="M0 510 L0 300 L118 248 L236 302 L358 208 L470 270 L600 188 L722 262 L842 220 L960 282 L1080 198 L1200 268 L1320 228 L1440 292 L1560 208 L1680 268 L1800 238 L1920 300 L1920 510 Z" fill="url(#mfar)" opacity=".9"/>
+  <path d="M0 510 L0 400 L140 330 L280 402 L420 320 L560 392 L700 330 L840 402 L980 340 L1120 402 L1260 340 L1400 402 L1540 340 L1680 402 L1820 350 L1920 402 L1920 510 Z" fill="url(#mnear)"/>
+</svg>`;
+
+  // --- дюны (тайл 1440x360) ---
+  SVG.dunes = `
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="360" viewBox="0 0 1440 360">
+  <defs>
+    <linearGradient id="d1" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#e2b273"/>
+      <stop offset="1" stop-color="#c68f50"/>
+    </linearGradient>
+    <linearGradient id="d2" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#edc48c"/>
+      <stop offset="1" stop-color="#d5a163"/>
+    </linearGradient>
+  </defs>
+  <path d="M0 360 L0 220 Q120 150 250 200 Q360 240 470 190 Q590 132 700 190 Q810 246 930 196 Q1050 142 1160 196 Q1280 250 1440 200 L1440 360 Z" fill="url(#d1)" opacity=".9"/>
+  <path d="M0 360 L0 288 Q140 232 280 282 Q420 330 560 280 Q700 228 840 282 Q980 334 1120 282 Q1260 232 1440 286 L1440 360 Z" fill="url(#d2)"/>
+  <path d="M120 244 Q240 212 330 240" stroke="#f6dBB0" stroke-opacity=".5" stroke-width="5" fill="none" stroke-linecap="round"/>
+  <path d="M760 240 Q880 208 980 238" stroke="#f6dbb0" stroke-opacity=".4" stroke-width="5" fill="none" stroke-linecap="round"/>
+</svg>`;
+
+  // --- песок (тайл 960x240) ---
+  SVG.ground = `
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="240" viewBox="0 0 960 240">
+  <defs>
+    <linearGradient id="gr" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#e7b878"/>
+      <stop offset=".35" stop-color="#dcab67"/>
+      <stop offset="1" stop-color="#b8863f"/>
+    </linearGradient>
+  </defs>
+  <rect width="960" height="240" fill="url(#gr)"/>
+  <rect y="0" width="960" height="10" fill="#c08f4d"/>
+  <g fill="#c99a55">
+    <ellipse cx="120" cy="70" rx="46" ry="7"/>
+    <ellipse cx="360" cy="120" rx="60" ry="8"/>
+    <ellipse cx="640" cy="60" rx="40" ry="6"/>
+    <ellipse cx="820" cy="150" rx="66" ry="9"/>
+    <ellipse cx="240" cy="190" rx="54" ry="8"/>
+  </g>
+  <g fill="#b1813f">
+    <circle cx="90" cy="110" r="3"/>
+    <circle cx="200" cy="60" r="2"/>
+    <circle cx="300" cy="150" r="3"/>
+    <circle cx="430" cy="90" r="2"/>
+    <circle cx="520" cy="170" r="3"/>
+    <circle cx="610" cy="120" r="2"/>
+    <circle cx="700" cy="200" r="3"/>
+    <circle cx="780" cy="80" r="2"/>
+    <circle cx="860" cy="180" r="3"/>
+    <circle cx="930" cy="110" r="2"/>
+  </g>
+  <g fill="#8fa04c">
+    <path d="M260 96 l4 -18 l4 18 z"/>
+    <path d="M268 96 l5 -14 l4 14 z"/>
+    <path d="M690 130 l4 -16 l4 16 z"/>
+    <path d="M880 96 l4 -18 l4 18 z"/>
+  </g>
+</svg>`;
+
+  // --- облако ---
+  SVG.cloud = `
+<svg xmlns="http://www.w3.org/2000/svg" width="480" height="200" viewBox="0 0 480 200">
+  <defs>
+    <filter id="cb" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="9"/>
+    </filter>
+    <linearGradient id="cg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity=".95"/>
+      <stop offset="1" stop-color="#dfeaf8" stop-opacity=".55"/>
+    </linearGradient>
+  </defs>
+  <g filter="url(#cb)" fill="url(#cg)">
+    <ellipse cx="140" cy="120" rx="110" ry="46"/>
+    <ellipse cx="240" cy="96" rx="96" ry="56"/>
+    <ellipse cx="330" cy="120" rx="96" ry="40"/>
+    <ellipse cx="200" cy="132" rx="140" ry="34"/>
+  </g>
+</svg>`;
+
+  // --- солнце ---
+  SVG.sun = `
+<svg xmlns="http://www.w3.org/2000/svg" width="600" height="600" viewBox="0 0 600 600">
+  <defs>
+    <radialGradient id="sg" cx=".5" cy=".5" r=".5">
+      <stop offset="0" stop-color="#fffbe8" stop-opacity="1"/>
+      <stop offset=".18" stop-color="#ffe9a8" stop-opacity=".85"/>
+      <stop offset=".45" stop-color="#ffd166" stop-opacity=".35"/>
+      <stop offset="1" stop-color="#ffb703" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <circle cx="300" cy="300" r="300" fill="url(#sg)"/>
+</svg>`;
+
+  // --- бонусы ---
+  SVG.pickupWeapon = `
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="pw" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fff6c2"/>
+      <stop offset=".5" stop-color="#ffd166"/>
+      <stop offset="1" stop-color="#d98512"/>
+    </linearGradient>
+    <filter id="pwb" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="5"/></filter>
+  </defs>
+  <circle cx="64" cy="64" r="44" fill="#ffe066" opacity=".3" filter="url(#pwb)"/>
+  <path d="M64 10 L110 37 L110 91 L64 118 L18 91 L18 37 Z" fill="url(#pw)" stroke="#fff8d8" stroke-width="3"/>
+  <path d="M40 54 L64 38 L88 54" stroke="#5c3b04" stroke-width="7" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M40 76 L64 60 L88 76" stroke="#5c3b04" stroke-width="7" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>`;
+
+  SVG.pickupMissile = `
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="pm" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#dff9ff"/>
+      <stop offset=".5" stop-color="#74d6ff"/>
+      <stop offset="1" stop-color="#1f7ea8"/>
+    </linearGradient>
+    <filter id="pmb" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="5"/></filter>
+  </defs>
+  <circle cx="64" cy="64" r="44" fill="#74d6ff" opacity=".3" filter="url(#pmb)"/>
+  <path d="M64 10 L110 37 L110 91 L64 118 L18 91 L18 37 Z" fill="url(#pm)" stroke="#e8fbff" stroke-width="3"/>
+  <path d="M64 32 Q82 52 82 74 L82 92 L46 92 L46 74 Q46 52 64 32 Z" fill="#0f4a63" opacity=".85"/>
+  <circle cx="64" cy="62" r="8" fill="#bff1ff"/>
+  <path d="M52 92 L46 106 L58 100 Z" fill="#0f4a63" opacity=".85"/>
+  <path d="M76 92 L82 106 L70 100 Z" fill="#0f4a63" opacity=".85"/>
+</svg>`;
+
+  SVG.pickupArmor = `
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="pa" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#eef4ff"/>
+      <stop offset=".5" stop-color="#9fb4ce"/>
+      <stop offset="1" stop-color="#4c5f7a"/>
+    </linearGradient>
+    <filter id="pab" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="5"/></filter>
+  </defs>
+  <circle cx="64" cy="64" r="44" fill="#9fb4ce" opacity=".35" filter="url(#pab)"/>
+  <path d="M64 10 L110 37 L110 91 L64 118 L18 91 L18 37 Z" fill="url(#pa)" stroke="#f2f7ff" stroke-width="3"/>
+  <path d="M64 30 L90 42 L90 66 Q90 88 64 100 Q38 88 38 66 L38 42 Z" fill="#2f4057"/>
+  <path d="M64 38 L82 46 L82 65 Q82 82 64 92 Q46 82 46 65 L46 46 Z" fill="#8ea4c0"/>
+  <circle cx="64" cy="60" r="6" fill="#dff0ff"/>
+</svg>`;
+
+  // ============================================================
+  //  ЗАГРУЗКА
+  // ============================================================
+
+  const images = {};
+  let assetsReady = false;
+
+  function loadAssets() {
+    const jobs = Object.keys(SVG).map(function (key) {
+      return new Promise(function (resolve) {
+        const img = new Image();
+        img.onload = function () { img.ok = true; resolve(); };
+        img.onerror = function () { resolve(); };
+        img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(SVG[key]);
+        images[key] = img;
+      });
+    });
+    return Promise.all(jobs).then(function () { assetsReady = true; });
+  }
+
+  function drawSprite(name, x, y, w, h, flash) {
+    const img = images[name];
+    if (!img || !img.ok) return;
+    ctx.drawImage(img, x, y, w, h);
+    if (flash) {
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = 0.5;
+      ctx.drawImage(img, x, y, w, h);
+      ctx.globalAlpha = 1;
+      ctx.globalCompositeOperation = 'source-over';
+    }
+  }
+
+  function drawImageSafe(name, x, y, w, h) {
+    const img = images[name];
+    if (!img || !img.ok) return;
+    ctx.drawImage(img, x, y, w, h);
+  }
+
+  // ============================================================
+  //  ПРОЦЕДУРНЫЕ СПРАЙТЫ СВЕЧЕНИЯ
+  // ============================================================
+
+  function makeGlow(inner, mid) {
+    const size = 128;
+    const c = document.createElement('canvas');
+    c.width = c.height = size;
+    const g = c.getContext('2d');
+    const grd = g.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+    grd.addColorStop(0, inner);
+    grd.addColorStop(0.3, mid);
+    grd.addColorStop(1, 'rgba(0,0,0,0)');
+    g.fillStyle = grd;
+    g.fillRect(0, 0, size, size);
+    return c;
+  }
+
+  const glows = {};
+
+  function makeSky(top, mid, bottom) {
+    const c = document.createElement('canvas');
+    c.width = 8;
+    c.height = 360;
+    const g = c.getContext('2d');
+    const grd = g.createLinearGradient(0, 0, 0, 360);
+    grd.addColorStop(0, top);
+    grd.addColorStop(0.55, mid);
+    grd.addColorStop(1, bottom);
+    g.fillStyle = grd;
+    g.fillRect(0, 0, 8, 360);
+    return c;
+  }
+
+  let skyDay = null;
+  let skyDusk = null;
+  let vignette = null;
+
+  function initSprites() {
+    glows.white = makeGlow('rgba(255,255,255,1)', 'rgba(255,255,255,.45)');
+    glows.yellow = makeGlow('rgba(255,248,200,1)', 'rgba(255,214,102,.5)');
+    glows.orange = makeGlow('rgba(255,225,170,1)', 'rgba(255,159,67,.5)');
+    glows.red = makeGlow('rgba(255,170,170,1)', 'rgba(255,82,82,.5)');
+    glows.cyan = makeGlow('rgba(220,250,255,1)', 'rgba(116,214,255,.5)');
+    glows.smoke = makeGlow('rgba(120,120,132,.55)', 'rgba(60,60,72,.2)');
+
+    skyDay = makeSky('#1f4a86', '#5f9fd4', '#cfe6f2');
+    skyDusk = makeSky('#2a1633', '#7a3b52', '#e0915f');
+
+    const v = document.createElement('canvas');
+    v.width = 960;
+    v.height = 540;
+    const g = v.getContext('2d');
+    const grd = g.createRadialGradient(480, 270, 180, 480, 270, 620);
+    grd.addColorStop(0, 'rgba(0,0,0,0)');
+    grd.addColorStop(1, 'rgba(0,0,0,.55)');
+    g.fillStyle = grd;
+    g.fillRect(0, 0, 960, 540);
+    vignette = v;
+  }
+
+  // ============================================================
+  //  ЗВУК
+  // ============================================================
+
+  let audio = null;
+  let muted = false;
+
+  function initAudio() {
+    if (audio) {
+      if (audio.state === 'suspended') audio.resume();
+      return;
+    }
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (AC) audio = new AC();
+    } catch (err) {
+      audio = null;
+    }
+  }
+
+  function tone(f1, f2, dur, type, vol) {
+    if (!audio || muted) return;
+    const t0 = audio.currentTime;
+    const osc = audio.createOscillator();
+    const gain = audio.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(f1, t0);
+    osc.frequency.exponentialRampToValueAtTime(Math.max(30, f2), t0 + dur);
+    gain.gain.setValueAtTime(vol, t0);
+    gain.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+    osc.connect(gain);
+    gain.connect(audio.destination);
+    osc.start(t0);
+    osc.stop(t0 + dur + 0.02);
+  }
+
+  const sfx = {
+    shoot: function () { tone(1100, 520, 0.05, 'square', 0.02); },
+    diag: function () { tone(760, 380, 0.05, 'triangle', 0.02); },
+    hit: function () { tone(420, 190, 0.05, 'square', 0.024); },
+    boom: function () { tone(200, 40, 0.34, 'sawtooth', 0.05); },
+    enemyShot: function () { tone(280, 140, 0.07, 'triangle', 0.022); },
+    missile: function () { tone(520, 980, 0.12, 'sawtooth', 0.02); },
+    pickup: function () { tone(700, 1450, 0.14, 'square', 0.03); },
+    armorHit: function () { tone(1100, 300, 0.14, 'square', 0.032); }
+  };
+
+  // ============================================================
+  //  СОСТОЯНИЕ
+  // ============================================================
+
+  let state = 'loading';       // loading | title | play | over | win
+  let time = 0;
+  let scroll = 0;
+  let score = 0;
+  let lives = MAX_LIVES;
+  let shake = 0;
+  let hurtFlash = 0;
+  let duskBlend = 0;
+
+  let player = null;
+  let bullets = [];
+  let enemies = [];
+  let particles = [];
+  let rings = [];
+  let popups = [];
+  let turrets = [];
+  let boss = null;
+  let bossPhase = false;
+  let warnTimer = 0;
+  let spawnTimer = 1;
+
+  let shotQueue = [];
+  let fireCooldown = 0;
+  let muzzle = 0;
+
+  // бонусы
+  let weaponLevel = 0;      // 0 — обычное, 1 — двойное и вдвое чаще
+  let missileLevel = 0;     // 0..2, каждый уровень — вдвое чаще
+  let playerArmor = 0;      // 0..2 — сколько попаданий выдержит броня
+  let missileTimer = 0;
+  let missileSide = 1;
+  let pickups = [];
+  let armorDropped = false;
+
+  const keys = new Set();
+
+  function makeTurret(worldX) {
+    return {
+      type: 'turret',
+      worldX: worldX,
+      x: worldX,
+      y: GROUND_Y - 34,
+      w: 48,
+      h: 34,
+      hp: 6,
+      timer: rand(0.8, 2.0),
+      flash: 0,
+      alive: true
+    };
+  }
+
+  function reset() {
+    state = 'play';
+    time = 0;
+    scroll = 0;
+    score = 0;
+    lives = MAX_LIVES;
+    shake = 0;
+    hurtFlash = 0;
+    duskBlend = 0;
+
+    bullets = [];
+    enemies = [];
+    particles = [];
+    rings = [];
+    popups = [];
+    boss = null;
+    bossPhase = false;
+    warnTimer = 0;
+    spawnTimer = 1.2;
+    shotQueue = [];
+    fireCooldown = 0;
+    muzzle = 0;
+
+    weaponLevel = 0;
+    missileLevel = 0;
+    playerArmor = 0;
+    missileTimer = 0;
+    missileSide = 1;
+    pickups = [];
+    armorDropped = false;
+
+    player = {
+      x: 80, y: 150,
+      w: 96, h: 45,
+      speed: 250,
+      invuln: 2,
+      alive: true,
+      respawn: 0
+    };
+
+    turrets = [1300, 2300, 3300, 4300, 5300].map(makeTurret);
+    for (const t of turrets) t.x = t.worldX - scroll;
+  }
+
+  // ============================================================
+  //  ИГРОК И ОРУЖИЕ
+  // ============================================================
+
+  function playerHitbox() {
+    return { x: player.x + 28, y: player.y + 14, w: 40, h: 18 };
+  }
+
+  function triggerShot() {
+    // бонус оружия: двойной залп вперёд и вниз + вдвое короче цикл
+    fireCooldown = weaponLevel > 0 ? 0.15 : 0.3;
+
+    shotQueue.push({ delay: 0.0, angle: 0, oy: -5 });
+    shotQueue.push({ delay: 0.04, angle: Math.PI / 4, oy: 8 });
+    shotQueue.push({ delay: 0.1, angle: 0, oy: -5 });
+
+    if (weaponLevel > 0) {
+      shotQueue.push({ delay: 0.0, angle: 0, oy: 2 });
+      shotQueue.push({ delay: 0.04, angle: Math.PI / 4, oy: 14 });
+      shotQueue.push({ delay: 0.1, angle: 0, oy: 2 });
+    }
+  }
+
+  function spawnPlayerBullet(angle, oy) {
+    const diag = angle !== 0;
+    const speed = diag ? 860 : 1120;
+    const ox = player.x + (diag ? 84 : 88);
+    const py = player.y + 20 + (oy || 0);
+
+    bullets.push({
+      x: ox, y: py,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      kind: 'p',
+      diag: diag,
+      life: 2
+    });
+
+    muzzle = 0.06;
+    if (diag) sfx.diag(); else sfx.shoot();
+  }
+
+  function updateWeapon(dt) {
+    muzzle = Math.max(0, muzzle - dt);
+    fireCooldown = Math.max(0, fireCooldown - dt);
+
+    const firing = keys.has('Space') || keys.has('KeyJ') || keys.has('KeyZ');
+    if (firing && fireCooldown <= 0 && player.alive) triggerShot();
+
+    for (let i = shotQueue.length - 1; i >= 0; i--) {
+      shotQueue[i].delay -= dt;
+      if (shotQueue[i].delay <= 0) {
+        if (player.alive) spawnPlayerBullet(shotQueue[i].angle, shotQueue[i].oy);
+        shotQueue.splice(i, 1);
+      }
+    }
+
+    // бонус ракет: самонаводящиеся, второй бонус — вдвое чаще
+    if (missileLevel > 0 && player.alive) {
+      missileTimer -= dt;
+      if (missileTimer <= 0) {
+        missileTimer = missileLevel >= 2 ? 0.55 : 1.1;
+        firePlayerMissile();
+      }
+    }
+  }
+
+  function updatePlayer(dt) {
+    if (!player.alive) {
+      player.respawn -= dt;
+      if (player.respawn <= 0 && state === 'play') {
+        player.alive = true;
+        player.x = 80;
+        player.y = 150;
+        player.invuln = 2.5;
+      }
+      return;
+    }
+
+    let dx = 0;
+    let dy = 0;
+    if (keys.has('ArrowLeft') || keys.has('KeyA')) dx -= 1;
+    if (keys.has('ArrowRight') || keys.has('KeyD')) dx += 1;
+    if (keys.has('ArrowUp') || keys.has('KeyW')) dy -= 1;
+    if (keys.has('ArrowDown') || keys.has('KeyS')) dy += 1;
+    if (dx && dy) {
+      dx *= Math.SQRT1_2;
+      dy *= Math.SQRT1_2;
+    }
+
+    player.x = clamp(player.x + dx * player.speed * dt, 10, W - 120);
+    player.y = clamp(player.y + dy * player.speed * dt, 30, GROUND_Y - 62);
+
+    player.invuln = Math.max(0, player.invuln - dt);
+
+    // пыль от винта у земли
+    if (player.y > GROUND_Y - 130 && Math.random() < dt * 26) {
+      particles.push({
+        x: player.x + rand(10, 80),
+        y: GROUND_Y - rand(0, 10),
+        vx: rand(-140, -40),
+        vy: rand(-24, -6),
+        life: rand(0.35, 0.8),
+        maxLife: 0.8,
+        size: rand(6, 16),
+        glow: 'smoke',
+        add: false
+      });
+    }
+  }
+
+  function hitPlayer() {
+    if (!player.alive || player.invuln > 0) return;
+
+    // броня принимает попадание вместо жизни
+    if (playerArmor > 0) {
+      playerArmor -= 1;
+      player.invuln = 1.2;
+      shake = 9;
+      hurtFlash = 0.6;
+      sfx.armorHit();
+      sparks(player.x + 48, player.y + 22, 16);
+      rings.push({ x: player.x + 48, y: player.y + 22, r: 18, maxR: 72, life: 0.45, maxLife: 0.45 });
+      popup(player.x + 48, player.y - 4,
+        playerArmor > 0 ? 'БРОНЯ ' + playerArmor : 'БРОНЯ СБИТА', '#bfe4ff');
+      return;
+    }
+
+    lives -= 1;
+    player.alive = false;
+    player.respawn = 1.5;
+    shotQueue.length = 0;
+
+    explode(player.x + 48, player.y + 22, 26);
+    shake = 14;
+    hurtFlash = 1;
+    sfx.boom();
+
+    if (lives <= 0) {
+      lives = 0;
+      state = 'over';
+    }
+  }
+
+  // ============================================================
+  //  ПУЛИ
+  // ============================================================
+
+  function applyMissileSteering(b, dt) {
+    if (!player.alive) return;
+    const target = Math.atan2(player.y + 22 - b.y, player.x + 48 - b.x);
+    const cur = Math.atan2(b.vy, b.vx);
+    let diff = ((target - cur + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+    diff = clamp(diff, -1.4 * dt, 1.4 * dt);
+    const sp = Math.hypot(b.vx, b.vy);
+    const na = cur + diff;
+    b.vx = Math.cos(na) * sp;
+    b.vy = Math.sin(na) * sp;
+  }
+
+  function updateBullets(dt) {
+    for (let i = bullets.length - 1; i >= 0; i--) {
+      const b = bullets[i];
+
+      if (b.kind === 'pm') {
+        // самонаведение на ближайшую цель
+        const target = nearestTarget(b.x, b.y);
+        if (target) {
+          const wanted = Math.atan2(target.cy - b.y, target.cx - b.x);
+          const cur = Math.atan2(b.vy, b.vx);
+          let diff = ((wanted - cur + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+          diff = clamp(diff, -6 * dt, 6 * dt);
+          const sp = Math.hypot(b.vx, b.vy);
+          const na = cur + diff;
+          b.vx = Math.cos(na) * sp;
+          b.vy = Math.sin(na) * sp;
+        }
+
+        b.smoke = (b.smoke || 0) - dt;
+        if (b.smoke <= 0) {
+          b.smoke = 0.04;
+          particles.push({
+            x: b.x, y: b.y,
+            vx: rand(-10, 10), vy: rand(-10, 10),
+            life: 0.35, maxLife: 0.35,
+            size: rand(3, 6), glow: 'smoke', add: false
+          });
+        }
+      }
+
+      if (b.kind === 'missile') {
+        b.smoke = (b.smoke || 0) - dt;
+        if (b.smoke <= 0) {
+          b.smoke = 0.05;
+          particles.push({
+            x: b.x, y: b.y,
+            vx: rand(-12, 12), vy: rand(-12, 12),
+            life: 0.4, maxLife: 0.4,
+            size: rand(4, 8), glow: 'smoke', add: false
+          });
+        }
+        applyMissileSteering(b, dt);
+      }
+
+      b.x += b.vx * dt;
+      b.y += b.vy * dt;
+      b.life -= dt;
+
+      // попадание в песок — облачко пыли
+      if (b.y > GROUND_Y + 4 && b.vy >= 0) {
+        for (let s = 0; s < 3; s++) {
+          particles.push({
+            x: b.x + rand(-6, 6), y: GROUND_Y + rand(0, 4),
+            vx: rand(-40, 40), vy: rand(-60, -20),
+            life: rand(0.25, 0.5), maxLife: 0.5,
+            size: rand(6, 12), glow: 'smoke', add: false
+          });
+        }
+        bullets.splice(i, 1);
+        continue;
+      }
+
+      if (b.life <= 0 || b.x < -40 || b.x > W + 40 || b.y < -40 || b.y > H + 40) {
+        bullets.splice(i, 1);
+      }
+    }
+  }
+
+  function fireAtPlayer(x, y, speed, kind) {
+    if (!player.alive) return;
+    const a = Math.atan2(player.y + 22 - y, player.x + 48 - x);
+    bullets.push({
+      x: x, y: y,
+      vx: Math.cos(a) * speed,
+      vy: Math.sin(a) * speed,
+      kind: kind || 'e',
+      life: 6
+    });
+  }
+
+  function nearestTarget(x, y) {
+    let best = null;
+    let bestD = Infinity;
+
+    if (boss && !boss.dead) {
+      const cx = boss.x + boss.w / 2;
+      const cy = boss.y + boss.h / 2;
+      const d = Math.hypot(cx - x, cy - y);
+      if (d < bestD) { bestD = d; best = { cx: cx, cy: cy }; }
+    }
+
+    for (const e of enemies) {
+      const cx = e.x + e.w / 2;
+      const cy = e.y + e.h / 2;
+      const d = Math.hypot(cx - x, cy - y);
+      if (d < bestD) { bestD = d; best = { cx: cx, cy: cy }; }
+    }
+
+    for (const t of turrets) {
+      if (!t.alive) continue;
+      const cx = t.x + t.w / 2;
+      const cy = t.y + t.h / 2;
+      const d = Math.hypot(cx - x, cy - y);
+      if (d < bestD) { bestD = d; best = { cx: cx, cy: cy }; }
+    }
+
+    return best;
+  }
+
+  function firePlayerMissile() {
+    missileSide = -missileSide;
+    bullets.push({
+      x: player.x + 36,
+      y: player.y + (missileSide > 0 ? 34 : 9),
+      vx: 300, vy: 0,
+      kind: 'pm',
+      life: 3.4,
+      smoke: 0
+    });
+    sfx.missile();
+  }
+
+  // ============================================================
+  //  БОНУСЫ
+  // ============================================================
+
+  function spawnPickup(type, x, y) {
+    pickups.push({
+      type: type,
+      x: x,
+      y: y,
+      bob: rand(0, Math.PI * 2),
+      life: 22
+    });
+  }
+
+  function maybeDrop(e) {
+    const r = Math.random();
+
+    if (e.type === 'heli') {
+      if (r < 0.22) spawnPickup('weapon', e.x + e.w / 2, e.y + e.h / 2);
+      else if (r < 0.42) spawnPickup('missile', e.x + e.w / 2, e.y + e.h / 2);
+    } else if (e.type === 'turret') {
+      if (r < 0.15) spawnPickup('weapon', e.x + 24, e.y);
+      else if (r < 0.3) spawnPickup('missile', e.x + 24, e.y);
+      else if (r < 0.34) spawnPickup('armor', e.x + 24, e.y);
+    } else {
+      if (r < 0.08) spawnPickup('missile', e.x + e.w / 2, e.y);
+      else if (r < 0.14) spawnPickup('weapon', e.x + e.w / 2, e.y);
+    }
+  }
+
+  function applyPickup(p) {
+    sfx.pickup();
+
+    if (p.type === 'weapon') {
+      if (weaponLevel < 1) {
+        weaponLevel = 1;
+        popup(p.x, p.y - 22, 'ДВОЙНОЕ ОРУЖИЕ', '#ffe066');
+      } else {
+        score += 300;
+        popup(p.x, p.y - 22, '+300', '#ffe066');
+      }
+    } else if (p.type === 'missile') {
+      if (missileLevel < 2) {
+        missileLevel += 1;
+        popup(p.x, p.y - 22, 'РАКЕТЫ ' + missileLevel, '#9fe8ff');
+      } else {
+        score += 300;
+        popup(p.x, p.y - 22, '+300', '#9fe8ff');
+      }
+    } else if (p.type === 'armor') {
+      playerArmor = 2;
+      popup(p.x, p.y - 22, 'БРОНЯ 2', '#bfe4ff');
+    }
+  }
+
+  function updatePickups(dt) {
+    for (let i = pickups.length - 1; i >= 0; i--) {
+      const p = pickups[i];
+
+      if (!bossPhase) p.x -= SCROLL_SPEED * dt;
+      p.life -= dt;
+
+      if (p.x < -60 || p.life <= 0) {
+        pickups.splice(i, 1);
+        continue;
+      }
+
+      if (!player.alive) continue;
+
+      const bobY = p.y + Math.sin(time * 3 + p.bob) * 7;
+      if (box({ x: p.x - 16, y: bobY - 16, w: 32, h: 32 }, playerHitbox())) {
+        applyPickup(p);
+        pickups.splice(i, 1);
+      }
+    }
+  }
+
+  // ============================================================
+  //  ВРАГИ
+  // ============================================================
+
+  function spawnDrone() {
+    const y = rand(50, 230);
+    enemies.push({
+      type: 'drone',
+      x: W + 40, y: y, w: 46, h: 23,
+      baseY: y,
+      amp: rand(16, 34),
+      phase: rand(0, Math.PI * 2),
+      speed: rand(150, 200),
+      hp: 2,
+      flash: 0,
+      t: 0,
+      pts: 100
+    });
+  }
+
+  function spawnHeli() {
+    const y = rand(60, 200);
+    enemies.push({
+      type: 'heli',
+      x: W + 50, y: y, w: 62, h: 31,
+      baseY: y,
+      speed: rand(95, 125),
+      hp: 6,
+      flash: 0,
+      t: 0,
+      fire: rand(0.8, 1.6),
+      pts: 250
+    });
+  }
+
+  function updateAirSpawns(dt) {
+    if (bossPhase) return;
+    spawnTimer -= dt;
+    if (spawnTimer > 0) return;
+
+    const progress = clamp(scroll / LEVEL_END, 0, 1);
+    spawnTimer = Math.max(0.9, rand(1.9, 2.8) - progress * 0.7);
+
+    if (progress > 0.3 && Math.random() < 0.3) spawnHeli();
+    else {
+      spawnDrone();
+      if (Math.random() < 0.3) spawnDrone();
+    }
+  }
+
+  function updateEnemies(dt) {
+    for (let i = enemies.length - 1; i >= 0; i--) {
+      const e = enemies[i];
+      e.t += dt;
+      e.flash = Math.max(0, e.flash - dt);
+
+      if (e.type === 'drone') {
+        e.x -= e.speed * dt;
+        e.y = e.baseY + Math.sin(e.t * 3.1 + e.phase) * e.amp;
+      } else {
+        e.x -= e.speed * dt;
+        e.y = e.baseY + Math.sin(e.t * 1.7) * 14;
+        e.fire -= dt;
+        if (e.fire <= 0 && e.x > 0 && e.x < W && player.alive) {
+          e.fire = rand(1.2, 1.9);
+          fireAtPlayer(e.x + 10, e.y + e.h / 2, 330);
+          sfx.enemyShot();
+        }
+      }
+
+      if (e.x + e.w < -60) enemies.splice(i, 1);
+    }
+  }
+
+  function updateTurrets(dt) {
+    for (const t of turrets) {
+      if (!t.alive) continue;
+      t.x = t.worldX - scroll;
+      t.flash = Math.max(0, t.flash - dt);
+      if (t.x < -60 || t.x > W + 60) continue;
+      if (!player.alive) continue;
+
+      t.timer -= dt;
+      if (t.timer <= 0) {
+        t.timer = rand(1.4, 2.2);
+        const bx = t.x + t.w / 2;
+        const by = t.y + 8;
+        fireAtPlayer(bx, by, 300);
+        sfx.enemyShot();
+        particles.push({
+          x: bx, y: by, vx: 0, vy: 0,
+          life: 0.1, maxLife: 0.1, size: 26, glow: 'orange', add: true
+        });
+      }
+    }
+  }
+
+  // ============================================================
+  //  БОСС
+  // ============================================================
+
+  function spawnBoss() {
+    boss = {
+      x: W + 60, y: 100,
+      w: 300, h: 150,
+      hp: BOSS_HP, maxHp: BOSS_HP,
+      entering: true,
+      t: 0,
+      attackTimer: 1.6,
+      pattern: -1,
+      telegraph: null,
+      gapY: 170,
+      flash: 0,
+      dead: false,
+      deathTimer: 0
+    };
+    shake = 12;
+    sfx.boom();
+  }
+
+  // стена пуль с коридором: коридор — мертвая зона, куда можно успеть сместиться
+  function fireBossWall(gapY) {
+    const x = boss.x + 24;
+    for (let y = 46; y <= 302; y += 26) {
+      if (Math.abs(y - gapY) < 54) continue;
+      bullets.push({ x: x, y: y, vx: -270, vy: 0, kind: 'e', life: 6 });
+    }
+    sfx.enemyShot();
+    shake = Math.max(shake, 4);
+  }
+
+  function fireBossAimed() {
+    const cx = boss.x + 24;
+    const cy = boss.y + 74;
+    const base = Math.atan2(player.y + 22 - cy, player.x + 48 - cx);
+    for (let i = -1; i <= 1; i++) {
+      const a = base + i * 0.14;
+      bullets.push({ x: cx, y: cy, vx: Math.cos(a) * 340, vy: Math.sin(a) * 340, kind: 'e', life: 6 });
+    }
+    sfx.enemyShot();
+    shake = Math.max(shake, 3);
+  }
+
+  function fireBossMissiles() {
+    const cx = boss.x + 24;
+    const cy = boss.y + 74;
+    for (let i = 0; i < 2; i++) {
+      const y = cy - 22 + i * 44;
+      const a = Math.atan2(player.y + 22 - y, player.x + 48 - cx);
+      bullets.push({ x: cx, y: y, vx: Math.cos(a) * 200, vy: Math.sin(a) * 200, kind: 'missile', life: 7 });
+    }
+    sfx.enemyShot();
+    shake = Math.max(shake, 2);
+  }
+
+  function fireBossPattern(t) {
+    if (t.pattern === 0) fireBossWall(t.gapY);
+    else if (t.pattern === 1) fireBossAimed();
+    else fireBossMissiles();
+  }
+
+  function damageBoss(dmg) {
+    if (!boss || boss.dead) return;
+
+    boss.hp -= dmg;
+    boss.flash = 0.06;
+
+    if (boss.hp > 0) {
+      sfx.hit();
+      sparks(boss.x + 14, boss.y + boss.h / 2, 3);
+      return;
+    }
+
+    boss.hp = 0;
+    boss.dead = true;
+    boss.deathTimer = 3;
+    boss.telegraph = null;
+    score += 5000;
+    shake = 20;
+    sfx.boom();
+    explode(boss.x + boss.w / 2, boss.y + boss.h / 2, 60);
+
+    // чистим вражеские пули на месте, не подменяя массив:
+    // иначе цикл столкновений останется с устаревшими индексами
+    for (let i = bullets.length - 1; i >= 0; i--) {
+      if (bullets[i].kind !== 'p' && bullets[i].kind !== 'pm') bullets.splice(i, 1);
+    }
+  }
+
+  function updateBoss(dt) {
+    if (!boss) return;
+
+    boss.t += dt;
+    boss.flash = Math.max(0, boss.flash - dt);
+
+    if (boss.dead) {
+      boss.deathTimer -= dt;
+      boss.y += 12 * dt;
+      if (Math.random() < dt * 14) {
+        explode(boss.x + rand(30, boss.w - 30), boss.y + rand(20, boss.h - 20), 8);
+      }
+      if (boss.deathTimer <= 0) {
+        boss = null;
+        state = 'win';
+        score += 3000;
+      }
+      return;
+    }
+
+    if (boss.entering) {
+      boss.x -= 120 * dt;
+      if (boss.x <= W - boss.w - 26) {
+        boss.x = W - boss.w - 26;
+        boss.entering = false;
+      }
+      return;
+    }
+
+    boss.y = 92 + Math.sin(boss.t * 1.15) * 32;
+
+    // телеграф атаки: игрок успевает уйти в мертвую зону
+    if (boss.telegraph) {
+      boss.telegraph.t -= dt;
+      if (boss.telegraph.t <= 0) {
+        fireBossPattern(boss.telegraph);
+        boss.telegraph = null;
+        boss.attackTimer = 1.5;
+      }
+      return;
+    }
+
+    boss.attackTimer -= dt;
+    if (boss.attackTimer <= 0 && player.alive) {
+      boss.pattern = (boss.pattern + 1) % 3;
+      boss.telegraph = {
+        t: 0.6,
+        pattern: boss.pattern,
+        gapY: rand(140, 218)
+      };
+    }
+  }
+
+  // ============================================================
+  //  ЧАСТИЦЫ И ЭФФЕКТЫ
+  // ============================================================
+
+  function sparks(x, y, n) {
+    for (let i = 0; i < n; i++) {
+      const a = rand(0, Math.PI * 2);
+      const sp = rand(60, 320);
+      particles.push({
+        x: x, y: y,
+        vx: Math.cos(a) * sp,
+        vy: Math.sin(a) * sp,
+        life: rand(0.15, 0.35),
+        maxLife: 0.35,
+        size: rand(3, 8),
+        glow: Math.random() < 0.5 ? 'yellow' : 'white',
+        add: true
+      });
+    }
+  }
+
+  function explode(x, y, power) {
+    rings.push({ x: x, y: y, r: power * 0.25, maxR: power * 2.6, life: 0.5, maxLife: 0.5 });
+
+    for (let i = 0; i < power; i++) {
+      const a = rand(0, Math.PI * 2);
+      const sp = rand(40, 60 + power * 7);
+      const color = ['white', 'yellow', 'orange', 'red'][Math.floor(Math.random() * 4)];
+      particles.push({
+        x: x, y: y,
+        vx: Math.cos(a) * sp,
+        vy: Math.sin(a) * sp,
+        life: rand(0.3, 0.8),
+        maxLife: 0.8,
+        size: rand(6, 16),
+        glow: color,
+        add: true
+      });
+    }
+
+    for (let i = 0; i < Math.floor(power / 2); i++) {
+      const a = rand(0, Math.PI * 2);
+      const sp = rand(10, 60);
+      particles.push({
+        x: x + rand(-8, 8), y: y + rand(-8, 8),
+        vx: Math.cos(a) * sp,
+        vy: Math.sin(a) * sp - 20,
+        life: rand(0.6, 1.4),
+        maxLife: 1.4,
+        size: rand(14, 30),
+        glow: 'smoke',
+        add: false
+      });
+    }
+
+    shake = Math.max(shake, clamp(power * 0.45, 3, 16));
+  }
+
+  function updateParticles(dt) {
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      const drag = p.add ? 0.94 : 0.97;
+      p.vx *= drag;
+      p.vy *= drag;
+      if (p.glow === 'smoke') p.vy -= 14 * dt;
+      p.life -= dt;
+      if (p.life <= 0) particles.splice(i, 1);
+    }
+
+    for (let i = rings.length - 1; i >= 0; i--) {
+      const r = rings[i];
+      r.life -= dt;
+      r.r = lerp(r.maxR, r.r, 0.92);
+      if (r.life <= 0) rings.splice(i, 1);
+    }
+
+    for (let i = popups.length - 1; i >= 0; i--) {
+      const p = popups[i];
+      p.y -= 40 * dt;
+      p.life -= dt;
+      if (p.life <= 0) popups.splice(i, 1);
+    }
+  }
+
+  function popup(x, y, str, color) {
+    popups.push({ x: x, y: y, text: str, color: color || '#ffe066', life: 0.9, maxLife: 0.9 });
+  }
+
+  // ============================================================
+  //  СТОЛКНОВЕНИЯ
+  // ============================================================
+
+  function handleCollisions() {
+    // Идём по снимку массива: пуля может быть удалена в том числе изнутри
+    // damageBoss (чистка вражеских пуль), а индексы живого массива при этом съезжают.
+    const snapshot = bullets.slice();
+
+    for (let k = 0; k < snapshot.length; k++) {
+      const b = snapshot[k];
+      if (b.kind !== 'p' && b.kind !== 'pm') continue;
+
+      const idx = bullets.indexOf(b);
+      if (idx === -1) continue;
+
+      const dmg = b.kind === 'pm' ? 3 : 1;
+      const r = { x: b.x - 4, y: b.y - 4, w: 8, h: 8 };
+
+      if (boss && !boss.dead &&
+          box(r, { x: boss.x + 30, y: boss.y + 24, w: 240, h: 104 })) {
+        bullets.splice(idx, 1);
+        damageBoss(dmg);
+        explode(b.x, b.y, 5);
+        continue;
+      }
+
+      let consumed = false;
+
+      for (const t of turrets) {
+        if (!t.alive) continue;
+        if (box(r, { x: t.x + 4, y: t.y + 8, w: 40, h: 26 })) {
+          bullets.splice(idx, 1);
+          t.hp -= dmg;
+          t.flash = 0.06;
+          sfx.hit();
+          sparks(b.x, b.y, 3);
+          if (t.hp <= 0) {
+            t.alive = false;
+            score += 250;
+            popup(t.x + 24, t.y + 6, '+250');
+            explode(t.x + 24, t.y + 16, 16);
+            sfx.boom();
+            maybeDrop(t);
+          }
+          consumed = true;
+          break;
+        }
+      }
+      if (consumed) continue;
+
+      for (let j = enemies.length - 1; j >= 0; j--) {
+        const e = enemies[j];
+        if (!box(r, e)) continue;
+
+        bullets.splice(idx, 1);
+        e.hp -= dmg;
+        e.flash = 0.06;
+        sfx.hit();
+        sparks(b.x, b.y, 2);
+
+        if (e.hp <= 0) {
+          score += e.pts;
+          popup(e.x + e.w / 2, e.y, '+' + e.pts);
+          explode(e.x + e.w / 2, e.y + e.h / 2, 14);
+          sfx.boom();
+          maybeDrop(e);
+          enemies.splice(j, 1);
+        }
+        break;
+      }
+    }
+
+    if (state !== 'play' || !player.alive || player.invuln > 0) return;
+
+    const pr = playerHitbox();
+
+    for (const b of bullets.slice()) {
+      if (b.kind === 'p' || b.kind === 'pm') continue;
+
+      const bi = bullets.indexOf(b);
+      if (bi === -1) continue;
+
+      if (box({ x: b.x - 5, y: b.y - 5, w: 10, h: 10 }, pr)) {
+        bullets.splice(bi, 1);
+        hitPlayer();
+        return;
+      }
+    }
+
+    for (let j = enemies.length - 1; j >= 0; j--) {
+      const e = enemies[j];
+      if (box(e, pr)) {
+        enemies.splice(j, 1);
+        explode(e.x + e.w / 2, e.y + e.h / 2, 14);
+        hitPlayer();
+        return;
+      }
+    }
+
+    if (boss && !boss.dead && box({ x: boss.x + 40, y: boss.y + 30, w: 220, h: 90 }, pr)) {
+      hitPlayer();
+    }
+  }
+
+  // ============================================================
+  //  ОБНОВЛЕНИЕ
+  // ============================================================
+
+  function update(dt) {
+    time += dt;
+
+    if (state === 'loading') return;
+
+    updateParticles(dt);
+    shake = Math.max(0, shake - dt * 34);
+    hurtFlash = Math.max(0, hurtFlash - dt * 1.6);
+
+    if (state === 'title') {
+      scroll += 40 * dt;
+      return;
+    }
+
+    if (state === 'over' || state === 'win') return;
+
+    if (!bossPhase) {
+      scroll += SCROLL_SPEED * dt;
+
+      // гарантированная броня перед боссом — летит на текущей высоте игрока
+      if (!armorDropped && scroll > LEVEL_END - 1500) {
+        armorDropped = true;
+        spawnPickup('armor', W + 40, clamp(player.y + 22, 70, 240));
+      }
+
+      if (scroll >= LEVEL_END) {
+        scroll = LEVEL_END;
+        bossPhase = true;
+        warnTimer = 2.2;
+        enemies.length = 0;
+      }
+    } else {
+      duskBlend = Math.min(1, duskBlend + dt * 0.5);
+      if (boss === null) {
+        warnTimer -= dt;
+        if (warnTimer <= 0) spawnBoss();
+      }
+    }
+
+    updatePlayer(dt);
+    updateWeapon(dt);
+    updateBullets(dt);
+    updateEnemies(dt);
+    updateTurrets(dt);
+    updatePickups(dt);
+    if (boss) updateBoss(dt);
+    updateAirSpawns(dt);
+    handleCollisions();
+  }
+
+  // ============================================================
+  //  ФОН
+  // ============================================================
+
+  function drawTiled(name, factor, y, height, tileW) {
+    const img = images[name];
+    if (!img || !img.ok) return;
+    const off = -wrap(scroll * factor, tileW);
+    for (let x = off; x < W; x += tileW) {
+      ctx.drawImage(img, x, y, tileW, height);
+    }
+  }
+
+  function drawBackground() {
+    ctx.drawImage(skyDay, 0, 0, W, H);
+    if (duskBlend > 0) {
+      ctx.globalAlpha = duskBlend;
+      ctx.drawImage(skyDusk, 0, 0, W, H);
+      ctx.globalAlpha = 1;
+    }
+
+    // солнце: SVG-спрайт + мягкое свечение
+    const sunX = 500 - wrap(scroll * 0.04, 60);
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = 0.9;
+    drawImageSafe('sun', sunX - 260, -150, 520, 520);
+    ctx.globalAlpha = 0.7;
+    ctx.drawImage(glows.yellow, sunX - 110, -60, 260, 260);
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+
+    // облака — дальний слой
+    for (let i = 0; i < 4; i++) {
+      const cx = wrap(i * 210 - scroll * 0.14, W + 420) - 210;
+      ctx.globalAlpha = 0.65;
+      drawImageSafe('cloud', cx, 24 + (i % 2) * 26, 210, 88);
+      ctx.globalAlpha = 1;
+    }
+    // облака — ближний слой
+    for (let i = 0; i < 3; i++) {
+      const cx = wrap(i * 280 - scroll * 0.3, W + 520) - 260;
+      ctx.globalAlpha = 0.5;
+      drawImageSafe('cloud', cx, 60 + (i % 2) * 30, 260, 108);
+      ctx.globalAlpha = 1;
+    }
+
+    // горы
+    drawTiled('mountains', 0.16, GROUND_Y - 170, 170, 680);
+
+    // дюны
+    drawTiled('dunes', 0.45, GROUND_Y - 130, 130, 520);
+
+    // земля
+    drawTiled('ground', 1, GROUND_Y - 16, 100, 400);
+
+    // дымка у горизонта
+    const haze = ctx.createLinearGradient(0, GROUND_Y - 46, 0, GROUND_Y + 6);
+    haze.addColorStop(0, 'rgba(255,240,220,0)');
+    haze.addColorStop(1, 'rgba(255,236,205,.5)');
+    ctx.fillStyle = haze;
+    ctx.fillRect(0, GROUND_Y - 46, W, 56);
+  }
+
+  // ============================================================
+  //  ОТРИСОВКА ОБЪЕКТОВ
+  // ============================================================
+
+  function groundShadow(x, y, w, h) {
+    const alt = clamp((GROUND_Y - (y + h)) / 220, 0, 1);
+    ctx.globalAlpha = 0.22 * (1 - alt * 0.55);
+    ctx.fillStyle = '#2a1a08';
+    ctx.beginPath();
+    ctx.ellipse(x + w / 2 + alt * 46, GROUND_Y + 8, (w / 2) * (1 - alt * 0.35), 6 - alt * 2, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+
+  function drawArmorPlates(x, y) {
+    const g = ctx.createLinearGradient(0, y, 0, y + 46);
+    if (playerArmor > 1) {
+      g.addColorStop(0, 'rgba(206,222,240,.97)');
+      g.addColorStop(0.5, 'rgba(126,148,175,.97)');
+      g.addColorStop(1, 'rgba(72,88,112,.97)');
+    } else {
+      g.addColorStop(0, 'rgba(196,180,160,.95)');
+      g.addColorStop(0.5, 'rgba(140,118,96,.95)');
+      g.addColorStop(1, 'rgba(84,66,50,.95)');
+    }
+
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.moveTo(x + 10, y + 7);
+    ctx.lineTo(x + 72, y + 3);
+    ctx.lineTo(x + 101, y + 16);
+    ctx.lineTo(x + 103, y + 30);
+    ctx.lineTo(x + 76, y + 43);
+    ctx.lineTo(x + 16, y + 43);
+    ctx.lineTo(x + 5, y + 26);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.strokeStyle = 'rgba(255,255,255,.45)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(x + 14, y + 11);
+    ctx.lineTo(x + 70, y + 7);
+    ctx.stroke();
+
+    ctx.fillStyle = 'rgba(235,245,255,.9)';
+    for (const p of [[16, 16], [16, 34], [74, 12], [74, 38], [48, 8], [48, 40]]) {
+      ctx.beginPath();
+      ctx.arc(x + p[0], y + p[1], 1.7, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  function drawPlayer() {
+    if (!player.alive) return;
+    if (player.invuln > 0 && Math.floor(time * 18) % 2 === 0) return;
+
+    groundShadow(player.x, player.y, player.w, player.h);
+    if (playerArmor > 0) drawArmorPlates(player.x, player.y);
+    drawSprite('player', player.x, player.y, player.w, player.h, false);
+
+    if (muzzle > 0) {
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = 0.9;
+      ctx.drawImage(glows.orange, player.x + 78, player.y + 2, 44, 44);
+      ctx.globalAlpha = 1;
+      ctx.globalCompositeOperation = 'source-over';
+    }
+
+    if (player.invuln > 0) {
+      const a = 0.35 + Math.sin(time * 14) * 0.15;
+      ctx.strokeStyle = 'rgba(140,225,255,' + a.toFixed(2) + ')';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.ellipse(player.x + 48, player.y + 22, 54, 32, 0, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
+
+  function drawEnemy(e) {
+    if (e.x > W + 60) return;
+    if (e.type === 'drone') {
+      groundShadow(e.x, e.y, e.w, e.h);
+      drawSprite('drone', e.x, e.y, e.w, e.h, e.flash > 0);
+    } else {
+      groundShadow(e.x, e.y, e.w, e.h);
+      drawSprite('eheli', e.x, e.y, e.w, e.h, e.flash > 0);
+    }
+  }
+
+  function drawTurret(t) {
+    if (!t.alive || t.x < -60 || t.x > W + 60) return;
+
+    const cx = t.x + t.w / 2;
+    const cy = t.y + 10;
+
+    // стволы к игроку
+    const ang = Math.atan2((player ? player.y + 22 : cy) - cy, (player ? player.x + 48 : 0) - cx);
+
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(ang);
+    ctx.fillStyle = '#2b2620';
+    ctx.fillRect(0, -7, 40, 5);
+    ctx.fillRect(0, 2, 40, 5);
+    ctx.fillStyle = '#4a4238';
+    ctx.fillRect(30, -7, 12, 5);
+    ctx.fillRect(30, 2, 12, 5);
+    ctx.restore();
+
+    drawSprite('turret', t.x, t.y, t.w, t.h, t.flash > 0);
+
+    if (t.flash > 0) {
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = 0.8;
+      ctx.drawImage(glows.white, cx - 20, cy - 20, 40, 40);
+      ctx.globalAlpha = 1;
+      ctx.globalCompositeOperation = 'source-over';
+    }
+  }
+
+  function drawBoss() {
+    groundShadow(boss.x, boss.y, boss.w, boss.h);
+
+    // телеграф атаки: подсвечиваем мертвую зону заранее
+    if (boss.telegraph) {
+      const g = boss.telegraph;
+
+      if (g.pattern === 0) {
+        // коридор, куда надо успеть сместиться
+        ctx.fillStyle = 'rgba(105,219,124,.09)';
+        ctx.fillRect(0, g.gapY - 54, W, 108);
+        ctx.strokeStyle = 'rgba(105,219,124,.3)';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([8, 8]);
+        ctx.beginPath();
+        ctx.moveTo(0, g.gapY - 54);
+        ctx.lineTo(W, g.gapY - 54);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(0, g.gapY + 54);
+        ctx.lineTo(W, g.gapY + 54);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // красная разметка стены у носа босса
+        const bx = boss.x + 18;
+        ctx.globalAlpha = 0.5 + Math.sin(time * 22) * 0.25;
+        ctx.strokeStyle = '#ff5252';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(bx, 46);
+        ctx.lineTo(bx, g.gapY - 54);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(bx, g.gapY + 54);
+        ctx.lineTo(bx, 302);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      } else {
+        // прицельный залп или ракеты — светится пушка
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalAlpha = 0.55 + Math.sin(time * 22) * 0.3;
+        ctx.drawImage(glows.red, boss.x - 32, boss.y + 46, 76, 76);
+        ctx.globalAlpha = 1;
+        ctx.globalCompositeOperation = 'source-over';
+      }
+    }
+
+    drawSprite('boss', boss.x, boss.y, boss.w, boss.h, boss.flash > 0);
+
+    // пульсирующее ядро
+    const pulse = 0.55 + Math.sin(time * 6) * 0.2;
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = boss.dead ? 0.4 : pulse;
+    ctx.drawImage(glows.red, boss.x + 118, boss.y + 34, 120, 120);
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+
+    // дым при низком здоровье
+    if (!boss.dead && boss.hp / boss.maxHp < 0.5 && Math.random() < 0.3) {
+      particles.push({
+        x: boss.x + rand(60, 240), y: boss.y + rand(20, 60),
+        vx: rand(-20, 10), vy: rand(-40, -10),
+        life: 0.9, maxLife: 0.9,
+        size: rand(16, 30), glow: 'smoke', add: false
+      });
+    }
+  }
+
+  function drawBullets() {
+    ctx.globalCompositeOperation = 'lighter';
+
+    for (const b of bullets) {
+      const isP = b.kind === 'p';
+      let g;
+      let s;
+      let tail;
+      let width;
+
+      if (b.kind === 'pm') {
+        g = glows.cyan;
+        s = 32;
+        tail = '#a8ecff';
+        width = 4.5;
+      } else if (isP) {
+        g = b.diag ? glows.cyan : glows.yellow;
+        s = b.diag ? 26 : 30;
+        tail = b.diag ? '#c8f6ff' : '#fff3bf';
+        width = 4;
+      } else if (b.kind === 'missile') {
+        g = glows.red;
+        s = 24;
+        tail = '#ff9f9f';
+        width = 3.5;
+      } else {
+        g = glows.red;
+        s = 24;
+        tail = '#ffb3a7';
+        width = 3.5;
+      }
+
+      ctx.globalAlpha = 0.9;
+      ctx.drawImage(g, b.x - s / 2, b.y - s / 2, s, s);
+
+      // хвост
+      const tx = b.x - b.vx * 0.02;
+      const ty = b.y - b.vy * 0.02;
+      ctx.globalAlpha = 0.55;
+      ctx.strokeStyle = tail;
+      ctx.lineWidth = width;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(tx, ty);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+    }
+
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+
+    // яркие ядра
+    for (const b of bullets) {
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, b.kind === 'p' ? 2.4 : b.kind === 'pm' ? 2.6 : 2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  function drawPickups() {
+    for (const p of pickups) {
+      if (p.life < 4 && Math.floor(time * 8) % 2 === 0) continue;
+
+      const bobY = p.y + Math.sin(time * 3 + p.bob) * 7;
+      const name = p.type === 'weapon' ? 'pickupWeapon'
+        : p.type === 'missile' ? 'pickupMissile'
+        : 'pickupArmor';
+      const glow = p.type === 'weapon' ? glows.yellow
+        : p.type === 'missile' ? glows.cyan
+        : glows.white;
+
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = 0.5 + Math.sin(time * 5 + p.bob) * 0.2;
+      ctx.drawImage(glow, p.x - 30, bobY - 30, 60, 60);
+      ctx.globalAlpha = 1;
+      ctx.globalCompositeOperation = 'source-over';
+
+      drawSprite(name, p.x - 15, bobY - 15, 30, 30, false);
+    }
+  }
+
+  function drawParticles() {
+    for (const p of particles) {
+      const k = clamp(p.life / p.maxLife, 0, 1);
+      const size = p.glow === 'smoke' ? p.size * (2 - k) : p.size * k;
+
+      if (p.add) ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = p.glow === 'smoke' ? k * 0.7 : k;
+      const sprite = glows[p.glow] || glows.white;
+      ctx.drawImage(sprite, p.x - size, p.y - size, size * 2, size * 2);
+      ctx.globalAlpha = 1;
+      ctx.globalCompositeOperation = 'source-over';
+    }
+
+    for (const r of rings) {
+      const k = clamp(r.life / r.maxLife, 0, 1);
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = k * 0.8;
+      ctx.strokeStyle = '#ffe0a3';
+      ctx.lineWidth = 1 + k * 4;
+      ctx.beginPath();
+      ctx.arc(r.x, r.y, r.r, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      ctx.globalCompositeOperation = 'source-over';
+    }
+
+    for (const p of popups) {
+      const k = clamp(p.life / p.maxLife, 0, 1);
+      ctx.globalAlpha = k;
+      text(p.text, p.x, p.y, 14, p.color, 'center', 700);
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  // ============================================================
+  //  HUD
+  // ============================================================
+
+  function panel(x, y, w, h) {
+    ctx.fillStyle = 'rgba(8,12,26,.42)';
+    rr(x, y, w, h, 10);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,.14)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+
+  function drawLifeIcon(x, y) {
+    drawSprite('player', x, y, 34, 16, false);
+  }
+
+  function drawHud() {
+    panel(16, 14, 196, 56);
+    text('SCORE', 30, 32, 10, 'rgba(190,205,235,.7)', 'left', 600);
+    text(String(score).padStart(6, '0'), 30, 56, 24, '#ffe066', 'left', 700);
+
+    panel(W - 152, 14, 136, 56);
+    text('LIVES', W - 138, 32, 10, 'rgba(190,205,235,.7)', 'left', 600);
+    for (let i = 0; i < Math.min(lives, 3); i++) {
+      drawLifeIcon(W - 138 + i * 38, 40);
+    }
+
+    text('УРОВЕНЬ 1 · ПУСТЫНЯ', W / 2, 30, 11, 'rgba(235,242,255,.66)', 'center', 600);
+
+    // прогресс уровня
+    if (!bossPhase) {
+      const pw = 196;
+      const p = clamp(scroll / LEVEL_END, 0, 1);
+      ctx.fillStyle = 'rgba(6,10,22,.5)';
+      rr(16, 76, pw, 5, 2.5);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(255,209,102,.85)';
+      rr(16, 76, Math.max(3, pw * p), 5, 2.5);
+      ctx.fill();
+    }
+
+    // активные бонусы
+    const bonuses = [];
+    if (weaponLevel > 0) bonuses.push({ name: 'pickupWeapon', label: '×2' });
+    if (missileLevel > 0) bonuses.push({ name: 'pickupMissile', label: '×' + missileLevel });
+    if (playerArmor > 0) bonuses.push({ name: 'pickupArmor', label: '×' + playerArmor });
+
+    for (let i = 0; i < bonuses.length; i++) {
+      const b = bonuses[i];
+      const bx = 16 + i * 72;
+      const by = 86;
+
+      ctx.fillStyle = 'rgba(8,12,26,.42)';
+      rr(bx, by, 64, 32, 10);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,.14)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      drawSprite(b.name, bx + 5, by + 5, 22, 22, false);
+      text(b.label, bx + 46, by + 21, 13, '#ffe066', 'center', 700);
+    }
+
+    if (boss && !boss.dead) {
+      const bw = 380;
+      const bx = (W - bw) / 2;
+      const by = H - 44;
+      const p = clamp(boss.hp / boss.maxHp, 0, 1);
+
+      ctx.fillStyle = 'rgba(6,8,18,.6)';
+      rr(bx - 3, by - 3, bw + 6, 18, 9);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,.16)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      const grad = ctx.createLinearGradient(bx, by, bx + bw, by);
+      grad.addColorStop(0, '#ff5252');
+      grad.addColorStop(0.6, '#ff9f43');
+      grad.addColorStop(1, '#ffd166');
+      ctx.fillStyle = 'rgba(40,8,14,.9)';
+      rr(bx, by, bw, 12, 6);
+      ctx.fill();
+      ctx.fillStyle = grad;
+      rr(bx, by, Math.max(6, bw * p), 12, 6);
+      ctx.fill();
+
+      for (let i = 1; i < 8; i++) {
+        ctx.fillStyle = 'rgba(0,0,0,.35)';
+        ctx.fillRect(bx + (bw / 8) * i, by, 2, 12);
+      }
+
+      text('БОСС', bx - 12, by + 11, 11, '#ffb3b3', 'right', 700);
+    }
+  }
+
+  // ============================================================
+  //  ЭКРАНЫ
+  // ============================================================
+
+  function drawTitle() {
+    ctx.fillStyle = 'rgba(4,7,16,.5)';
+    ctx.fillRect(0, 0, W, H);
+
+    const titleGrad = ctx.createLinearGradient(0, 40, 0, 100);
+    titleGrad.addColorStop(0, '#fff6d0');
+    titleGrad.addColorStop(0.55, '#ffd166');
+    titleGrad.addColorStop(1, '#ff9f43');
+
+    ctx.save();
+    ctx.shadowColor = 'rgba(255,170,60,.55)';
+    ctx.shadowBlur = 24;
+    ctx.font = '700 58px "Segoe UI", system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = titleGrad;
+    ctx.fillText('SILKWORM II', W / 2, 92);
+    ctx.restore();
+
+    text('УРОВЕНЬ 1 · ПУСТЫНЯ', W / 2, 122, 13, 'rgba(200,225,255,.8)', 'center', 600);
+
+    // демо-вертолёт
+    const hover = Math.sin(time * 2.2) * 5;
+    drawSprite('player', W / 2 - 48, 152 + hover, 96, 45, false);
+
+    text('WASD / стрелки — полёт · ПРОБЕЛ — огонь', W / 2, 220, 13, 'rgba(232,238,250,.9)', 'center', 500);
+    text('2 вперёд + 1 вниз под 45°', W / 2, 240, 13, 'rgba(232,238,250,.9)', 'center', 500);
+    text('Бонусы: двойной залп · ракеты · броня', W / 2, 262, 12, 'rgba(255,209,102,.85)', 'center', 600);
+    text('R — заново · M — звук', W / 2, 284, 12, 'rgba(170,185,215,.75)', 'center', 500);
+
+    if (Math.floor(time * 2) % 2 === 0) {
+      text('НАЖМИ ПРОБЕЛ', W / 2, 320, 16, '#ffd166', 'center', 700);
+    }
+  }
+
+  function drawScreens() {
+    if (state === 'title') {
+      drawTitle();
+      return;
+    }
+
+    if (state === 'over') {
+      ctx.fillStyle = 'rgba(6,6,16,.72)';
+      ctx.fillRect(0, 0, W, H);
+      text('ИГРА ОКОНЧЕНА', W / 2, 150, 34, '#ff6b6b', 'center', 700);
+      text('ОЧКИ: ' + score, W / 2, 186, 18, '#ffe066', 'center', 600);
+      if (Math.floor(time * 2) % 2 === 0) {
+        text('R — ЗАНОВО', W / 2, 224, 15, 'rgba(235,242,255,.9)', 'center', 600);
+      }
+      return;
+    }
+
+    if (state === 'win') {
+      ctx.fillStyle = 'rgba(4,14,10,.72)';
+      ctx.fillRect(0, 0, W, H);
+      text('УРОВЕНЬ ПРОЙДЕН', W / 2, 140, 32, '#69db7c', 'center', 700);
+      text('ОЧКИ: ' + score, W / 2, 178, 18, '#ffe066', 'center', 600);
+      if (Math.floor(time * 2) % 2 === 0) {
+        text('R — ЗАНОВО', W / 2, 216, 15, 'rgba(235,242,255,.9)', 'center', 600);
+      }
+      return;
+    }
+
+    if (state === 'play' && bossPhase && boss === null && warnTimer > 0 && Math.floor(time * 5) % 2 === 0) {
+      text('WARNING', W / 2, 150, 34, '#ff4040', 'center', 700);
+      text('КРУПНАЯ ЦЕЛЬ', W / 2, 176, 13, 'rgba(255,180,180,.85)', 'center', 600);
+    }
+  }
+
+  // ============================================================
+  //  КАДР
+  // ============================================================
+
+  function render() {
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.setTransform(SCALE, 0, 0, SCALE, 0, 0);
+
+    if (shake > 0.3) {
+      ctx.translate(rand(-shake, shake) * 0.5, rand(-shake, shake) * 0.5);
+    }
+
+    if (state !== 'loading') {
+      drawBackground();
+
+      for (const t of turrets) drawTurret(t);
+      for (const e of enemies) drawEnemy(e);
+      if (boss) drawBoss();
+      if (player && player.alive) drawPlayer();
+      drawPickups();
+
+      drawBullets();
+      drawParticles();
+
+      if (vignette) {
+        ctx.globalAlpha = 0.75;
+        ctx.drawImage(vignette, 0, 0, W, H);
+        ctx.globalAlpha = 1;
+      }
+    }
+
+    ctx.setTransform(SCALE, 0, 0, SCALE, 0, 0);
+
+    if (state === 'loading') {
+      text('ЗАГРУЗКА…', W / 2, H / 2, 18, 'rgba(220,232,255,.9)', 'center', 600);
+    } else if (state === 'play') {
+      drawHud();
+    }
+
+    if (hurtFlash > 0) {
+      const g = ctx.createRadialGradient(W / 2, H / 2, 120, W / 2, H / 2, 420);
+      g.addColorStop(0, 'rgba(255,0,0,0)');
+      g.addColorStop(1, 'rgba(255,30,30,' + (hurtFlash * 0.5).toFixed(2) + ')');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, W, H);
+    }
+
+    if (state !== 'loading') drawScreens();
+  }
+
+  // ============================================================
+  //  ВВОД
+  // ============================================================
+
+  window.addEventListener('keydown', function (e) {
+    const code = e.code;
+    if (code === 'Space' || code.indexOf('Arrow') === 0) e.preventDefault();
+
+    initAudio();
+
+    if (code === 'KeyM') {
+      muted = !muted;
+      return;
+    }
+
+    if (code === 'KeyR') {
+      if (state === 'over' || state === 'win') reset();
+      return;
+    }
+
+    if (code === 'Space' || code === 'Enter') {
+      if (state === 'title' || state === 'over' || state === 'win') reset();
+    }
+
+    keys.add(code);
+  });
+
+  window.addEventListener('keyup', function (e) {
+    keys.delete(e.code);
+  });
+
+  window.addEventListener('blur', function () {
+    keys.clear();
+  });
+
+  // ============================================================
+  //  СТАРТ
+  // ============================================================
+
+  initSprites();
+
+  let lastTime = 0;
+
+  function frame(now) {
+    if (!lastTime) lastTime = now;
+    const dt = Math.min((now - lastTime) / 1000, 0.05);
+    lastTime = now;
+
+    update(dt);
+    render();
+    requestAnimationFrame(frame);
+  }
+
+  loadAssets().then(function () {
+    state = 'title';
+    requestAnimationFrame(function (now) {
+      lastTime = now;
+      update(0);
+      render();
+      requestAnimationFrame(frame);
+    });
+  });
+})();
+</script>
+</body>
+</html>
